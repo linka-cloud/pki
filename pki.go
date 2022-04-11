@@ -31,6 +31,14 @@ const (
 	DefaultSize = 2048
 )
 
+type PKI interface {
+	Generate(req *csr.CertificateRequest, profile Profile) (cert, key []byte, err error)
+	CACert() []byte
+	CAKey() []byte
+	NewIntermediate(csr *csr.CertificateRequest) (PKI, error)
+	Save(certPath string, keyPath string) error
+}
+
 type pki struct {
 	generator *csr.Generator
 	signer    signer.Signer
@@ -39,7 +47,7 @@ type pki struct {
 	key  []byte
 }
 
-func NewPKIFromCSR(csr *csr.CertificateRequest) (*pki, error) {
+func NewPKIFromCSR(csr *csr.CertificateRequest) (PKI, error) {
 	cert, _, key, err := initca.New(csr)
 	if err != nil {
 		return nil, err
@@ -47,7 +55,7 @@ func NewPKIFromCSR(csr *csr.CertificateRequest) (*pki, error) {
 	return NewPKIFromBytes(cert, key)
 }
 
-func NewPKIFromFiles(caCert, caKey string) (*pki, error) {
+func NewPKIFromFiles(caCert, caKey string) (PKI, error) {
 	cert, err := os.ReadFile(caCert)
 	if err != nil {
 		return nil, err
@@ -59,7 +67,7 @@ func NewPKIFromFiles(caCert, caKey string) (*pki, error) {
 	return NewPKIFromBytes(cert, key)
 }
 
-func NewPKIFromBytes(cert, key []byte) (*pki, error) {
+func NewPKIFromBytes(cert, key []byte) (PKI, error) {
 	parsedCa, err := helpers.ParseCertificatePEM(cert)
 	if err != nil {
 		return nil, err
@@ -110,7 +118,7 @@ func (p *pki) CAKey() []byte {
 	return p.key[:]
 }
 
-func (p *pki) NewIntermediate(csr *csr.CertificateRequest) (*pki, error) {
+func (p *pki) NewIntermediate(csr *csr.CertificateRequest) (PKI, error) {
 	cert, key, err := p.Generate(csr, ProfileIntermediateCA)
 	if err != nil {
 		return nil, err
