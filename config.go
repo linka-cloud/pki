@@ -15,6 +15,7 @@
 package pki
 
 import (
+	"crypto/x509"
 	"fmt"
 )
 
@@ -32,12 +33,41 @@ func (p Profile) Validate() error {
 	}
 }
 
+func (p Profile) String() string {
+	return string(p)
+}
+
 const (
 	ProfileIntermediateCA Profile = "intermediate_ca"
 	ProfilePeer           Profile = "peer"
 	ProfileServer         Profile = "server"
 	ProfileClient         Profile = "client"
 )
+
+func ProfileFromCert(cert *x509.Certificate) Profile {
+	var hasClientAuth, hasServerAuth bool
+	for _, v := range cert.ExtKeyUsage {
+		switch v {
+		case x509.ExtKeyUsageClientAuth:
+			hasClientAuth = true
+		case x509.ExtKeyUsageServerAuth:
+			hasServerAuth = true
+		}
+	}
+	if hasClientAuth && hasServerAuth {
+		if cert.KeyUsage&x509.KeyUsageCertSign != 0 {
+			return ProfileIntermediateCA
+		}
+		return ProfilePeer
+	}
+	if hasServerAuth {
+		return ProfileServer
+	}
+	if hasClientAuth {
+		return ProfileClient
+	}
+	return ProfileServer
+}
 
 var configJSON = []byte(`
 {

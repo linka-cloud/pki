@@ -33,8 +33,7 @@ var (
 )
 
 func main() {
-	req := pki2.NewRequest("Example Org Root CA")
-	caPKI, err := pki2.NewPKIFromCSR(req)
+	caPKI, err := pki2.New("Example Org Root CA")
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -44,9 +43,7 @@ func main() {
 	if err := caPKI.Save("tests/ca.crt", "tests/ca.key"); err != nil {
 		logrus.Fatal(err)
 	}
-	inter := pki2.NewRequest("Example Org ETCD CA")
-	inter.CA = &csr.CAConfig{Expiry: "42720h"}
-	pki, err := caPKI.NewIntermediate(inter)
+	pki, err := caPKI.NewIntermediate("Example Org ETCD CA", pki2.WithCA(&csr.CAConfig{Expiry: "42720h"}))
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -54,7 +51,11 @@ func main() {
 		logrus.Fatal(err)
 	}
 	for _, v := range etcdNodes {
-		cert, key, err := pki.Generate(pki2.NewRequest(v[0], pki2.WithHosts(v...)), pki2.ProfilePeer)
+		cert, key, err := pki.Generate(v[0], pki2.WithHosts(v...), pki2.WithProfile(pki2.ProfilePeer))
+		if err != nil {
+			logrus.Fatal(err)
+		}
+		cert, err = pki.Renew(cert)
 		if err != nil {
 			logrus.Fatal(err)
 		}

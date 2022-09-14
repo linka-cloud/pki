@@ -15,6 +15,8 @@
 package pki
 
 import (
+	"fmt"
+	"io"
 	"os"
 
 	"github.com/cloudflare/cfssl/cli/genkey"
@@ -32,10 +34,15 @@ const (
 )
 
 type PKI interface {
-	Generate(req *csr.CertificateRequest, profile Profile) (cert, key []byte, err error)
+	NewIntermediate(cn string, opts ...Option) (PKI, error)
+	Generate(cn string, opts ...Option) ([]byte, []byte, error)
+	Renew(old []byte) (cert []byte, err error)
 	CACert() []byte
 	CAKey() []byte
-	NewIntermediate(csr *csr.CertificateRequest) (PKI, error)
+
+	GenerateFromCSR(req *csr.CertificateRequest, profile Profile) (cert, key []byte, err error)
+	NewIntermediateFromCSR(csr *csr.CertificateRequest) (PKI, error)
+
 	Save(certPath string, keyPath string) error
 }
 
@@ -47,15 +54,35 @@ type pki struct {
 	key  []byte
 }
 
-func NewPKIFromCSR(csr *csr.CertificateRequest) (PKI, error) {
+func New(cn string, opts ...Option) (PKI, error) {
+	req := newRequest(cn, opts...)
+	if req.Profile != "" {
+		return nil, fmt.Errorf("cannot specify profile for root CA")
+	}
+	return NewFromCSR(req.CertificateRequest)
+}
+
+func NewFromReaders(caCert, caKey io.Reader) (PKI, error) {
+	cert, err := io.ReadAll(caCert)
+	if err != nil {
+		return nil, fmt.Errorf("read cert: %w", err)
+	}
+	key, err := io.ReadAll(caKey)
+	if err != nil {
+		return nil, fmt.Errorf("read key: %v", err)
+	}
+	return NewFromBytes(cert, key)
+}
+
+func NewFromCSR(csr *csr.CertificateRequest) (PKI, error) {
 	cert, _, key, err := initca.New(csr)
 	if err != nil {
 		return nil, err
 	}
-	return NewPKIFromBytes(cert, key)
+	return NewFromBytes(cert, key)
 }
 
-func NewPKIFromFiles(caCert, caKey string) (PKI, error) {
+func NewFromFiles(caCert, caKey string) (PKI, error) {
 	cert, err := os.ReadFile(caCert)
 	if err != nil {
 		return nil, err
@@ -64,10 +91,10 @@ func NewPKIFromFiles(caCert, caKey string) (PKI, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPKIFromBytes(cert, key)
+	return NewFromBytes(cert, key)
 }
 
-func NewPKIFromBytes(cert, key []byte) (PKI, error) {
+func NewFromBytes(cert, key []byte) (PKI, error) {
 	parsedCa, err := helpers.ParseCertificatePEM(cert)
 	if err != nil {
 		return nil, err
@@ -88,7 +115,21 @@ func NewPKIFromBytes(cert, key []byte) (PKI, error) {
 	return &pki{signer: s, generator: g, cert: cert, key: key}, nil
 }
 
-func (p *pki) Generate(req *csr.CertificateRequest, profile Profile) (cert, key []byte, err error) {
+func (p *pki) Generate(cn string, opts ...Option) ([]byte, []byte, error) {
+	req := newRequest(cn, opts...)
+	if req.Profile == "" {
+		req.Profile = ProfileServer
+	}
+	if req.Profile == ProfileIntermediateCA {
+		return nil, nil, fmt.Errorf("profile cannot be intermediate_ca")
+	}
+	if req.CA != nil {
+		return nil, nil, fmt.Errorf("cannot specify CA for leaf certificate")
+	}
+	return p.GenerateFromCSR(req.CertificateRequest, req.Profile)
+}
+
+func (p *pki) GenerateFromCSR(req *csr.CertificateRequest, profile Profile) (cert, key []byte, err error) {
 	if err := profile.Validate(); err != nil {
 		return nil, nil, err
 	}
@@ -110,6 +151,20 @@ func (p *pki) Generate(req *csr.CertificateRequest, profile Profile) (cert, key 
 	return cert, key, nil
 }
 
+func (p *pki) Renew(old []byte) ([]byte, error) {
+	cert, err := helpers.ParseCertificatePEM(old)
+	if err != nil {
+		return nil, fmt.Errorf("parse cert: %w", err)
+	}
+	req := csr.ExtractCertificateRequest(cert)
+	req.Extensions = cert.Extensions
+	csrPem, _, err := p.generator.ProcessRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf("process csr: %w", err)
+	}
+	return p.signer.Sign(signer.SignRequest{Request: string(csrPem), Profile: ProfileFromCert(cert).String()})
+}
+
 func (p *pki) CACert() []byte {
 	return p.cert[:]
 }
@@ -118,12 +173,20 @@ func (p *pki) CAKey() []byte {
 	return p.key[:]
 }
 
-func (p *pki) NewIntermediate(csr *csr.CertificateRequest) (PKI, error) {
-	cert, key, err := p.Generate(csr, ProfileIntermediateCA)
+func (p *pki) NewIntermediate(cn string, opts ...Option) (PKI, error) {
+	req := newRequest(cn, opts...)
+	if req.Profile != "" && req.Profile != ProfileIntermediateCA {
+		return nil, fmt.Errorf("profile must be intermediate_ca")
+	}
+	return p.NewIntermediateFromCSR(req.CertificateRequest)
+}
+
+func (p *pki) NewIntermediateFromCSR(csr *csr.CertificateRequest) (PKI, error) {
+	cert, key, err := p.GenerateFromCSR(csr, ProfileIntermediateCA)
 	if err != nil {
 		return nil, err
 	}
-	return NewPKIFromBytes(cert, key)
+	return NewFromBytes(cert, key)
 }
 
 func (p *pki) Save(certPath string, keyPath string) error {
@@ -140,9 +203,20 @@ func Save(certPath string, cert []byte, keyPath string, key []byte) error {
 	return nil
 }
 
-func NewRequest(cn string, opts ...Option) *csr.CertificateRequest {
-	req := &csr.CertificateRequest{
-		CN: cn,
+type req struct {
+	*csr.CertificateRequest
+	Profile Profile
+}
+
+func newRequest(cn string, opts ...Option) *req {
+	req := &req{
+		CertificateRequest: &csr.CertificateRequest{
+			CN: cn,
+			KeyRequest: &csr.KeyRequest{
+				A: "rsa",
+				S: 2048,
+			},
+		},
 	}
 	for _, o := range opts {
 		o(req)

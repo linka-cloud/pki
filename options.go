@@ -18,22 +18,34 @@ import (
 	"github.com/cloudflare/cfssl/csr"
 )
 
-type Option func(r *csr.CertificateRequest)
+type Option func(r *req)
 
 func WithNames(names ...csr.Name) Option {
-	return func(r *csr.CertificateRequest) {
+	return func(r *req) {
 		r.Names = append(r.Names, names...)
 	}
 }
 
 func WithHosts(hosts ...string) Option {
-	return func(r *csr.CertificateRequest) {
+	return func(r *req) {
 		r.Hosts = append(r.Hosts, hosts...)
 	}
 }
 
 func WithKeyRequest(kr *csr.KeyRequest) Option {
-	return func(r *csr.CertificateRequest) {
+	return func(r *req) {
 		r.KeyRequest = kr
+	}
+}
+
+func WithProfile(p Profile) Option {
+	return func(r *req) {
+		r.Profile = p
+	}
+}
+
+func WithCA(ca *csr.CAConfig) Option {
+	return func(r *req) {
+		r.CA = ca
 	}
 }
